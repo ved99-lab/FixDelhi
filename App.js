@@ -1,22 +1,44 @@
 import { useState, useEffect, useCallback } from 'react';
 import './App.css';
 
-
 // Constants
 const CATEGORY_ICONS = {
   Road: "🛣️",
   Sanitation: "🗑️",
   Water: "🚰",
   Electricity: "💡",
+  'Green Space': "🌳",
+  'Public Toilet': "🚽",
   Other: "❓"
 };
 
-const STATUS_OPTIONS = ["Pending", "In Progress", "Resolved"];
+const STATUS_OPTIONS = ["Pending", "In Progress", "Resolved", "Rejected"];
 const SORT_OPTIONS = [
   { value: "newest", label: "Newest First" },
   { value: "oldest", label: "Oldest First" },
   { value: "most-voted", label: "Most Votes" },
   { value: "least-voted", label: "Least Votes" }
+];
+
+const ADMIN_ROLES = {
+  CITY_OFFICIAL: "city_official",
+  SANITATION_DEPARTMENT: "sanitation_department",
+  PARKS_DEPARTMENT: "parks_department",
+  URBAN_DEVELOPMENT: "urban_development"
+};
+
+const ADMIN_ADDRESSES = [
+  "0x1234567890123456789012345678901234567890",
+  "0x0987654321098765432109876543210987654321"
+];
+
+const DEPARTMENTS = [
+  "Transport",
+  "Sanitation",
+  "Water",
+  "Power",
+  "Parks",
+  "Urban Development"
 ];
 
 const DEFAULT_ISSUES = [
@@ -29,7 +51,8 @@ const DEFAULT_ISSUES = [
     image: "https://images.unsplash.com/photo-1563555397763-5fc103c6f7b8?w=500&auto=format&fit=crop",
     status: "Pending",
     votes: 4,
-    userAddress: null,
+    userAddress: "0x1234567890123456789012345678901234567890",
+    assignedDepartment: "Transport",
     comments: [
       { id: 1, user: "Resident1", text: "This has been here for weeks!" },
       { id: 2, user: "Driver123", text: "Damaged my car's suspension" }
@@ -38,25 +61,35 @@ const DEFAULT_ISSUES = [
   },
   {
     id: 2,
-    title: "Garbage Overflow",
-    description: "Trash bin not emptied in 5 days, causing foul smell",
+    title: "Garbage Pileup in Park",
+    description: "Garbage hasn't been collected for over a week in the local park",
     category: "Sanitation",
-    location: "Karol Bagh Market",
-    image: "https://images.unsplash.com/photo-1503596476-1c12a8ba09a9?w=500&auto=format&fit=crop",
+    location: "Lodhi Gardens, Delhi",
+    image: "https://images.unsplash.com/photo-1575408264798-b50b252663e6?w=500&auto=format&fit=crop",
     status: "In Progress",
-    votes: 8,
-    userAddress: null,
-    comments: [
-      { id: 1, user: "LocalBiz", text: "Affecting our customers" }
-    ],
-    createdAt: new Date(Date.now() - 86400000).toISOString()
+    votes: 12,
+    userAddress: "0x0987654321098765432109876543210987654321",
+    assignedDepartment: "Sanitation",
+    comments: [],
+    createdAt: new Date(Date.now() - 86400000).toISOString() // 1 day ago
   }
 ];
 
-const DEFAULT_STATE = {
-  issues: DEFAULT_ISSUES,
-  currentAccount: null,
-  isWalletConnecting: false,
+const DEFAULT_ADMIN_STATE = {
+  adminRole: ADMIN_ROLES.CITY_OFFICIAL,
+  adminView: 'issues',
+  departmentFilter: 'All',
+  statusFilter: 'All',
+  selectedAction: null,
+  selectedIssue: null,
+  actionFormData: {
+    newStatus: "",
+    rejectionReason: "",
+    departmentAssignment: ""
+  }
+};
+
+const DEFAULT_USER_STATE = {
   newIssue: {
     title: "",
     description: "",
@@ -67,10 +100,18 @@ const DEFAULT_STATE = {
   activeTab: "all",
   showForm: false,
   isSubmitting: false,
-  notification: null,
   searchTerm: "",
   filterCategory: "All",
   sortBy: "newest",
+  selectedIssue: null
+};
+
+const DEFAULT_STATE = {
+  issues: DEFAULT_ISSUES,
+  currentAccount: null,
+  isWalletConnecting: false,
+  isAdmin: false,
+  notification: null,
   showStats: false,
   darkMode: false,
   showMap: false,
@@ -79,189 +120,1324 @@ const DEFAULT_STATE = {
     displayName: "Anonymous",
     notificationsEnabled: true,
     bio: ""
-  }
+  },
+  admin: DEFAULT_ADMIN_STATE,
+  user: DEFAULT_USER_STATE
 };
 
-function App() {
-  const [state, setState] = useState(() => {
-    const savedState = localStorage.getItem('fixDelhiState');
-    return savedState ? JSON.parse(savedState) : DEFAULT_STATE;
-  });
+// Utility Functions
+const validateImageFile = (file) => {
+  if (!file) return { valid: false, error: "No file selected" };
+  if (file.size > 2 * 1024 * 1024) return { valid: false, error: "File size should not exceed 2MB" };
+  if (!file.type.match('image.*')) return { valid: false, error: "Only image files are allowed" };
+  return { valid: true };
+};
 
-  const {
-    issues, currentAccount, isWalletConnecting, newIssue, activeTab, showForm,
-    isSubmitting, notification, searchTerm, filterCategory, sortBy, showStats,
-    darkMode, showMap, showUserProfile, userProfile
-  } = state;
+const shortenAddress = (addr) => {
+  if (!addr) return '';
+  return `${addr.substring(0, 6)}...${addr.substring(addr.length - 4)}`;
+};
 
-  // Save state to localStorage and handle dark mode
+// Component Definitions
+const WalletConnectScreen = ({ connectWallet, isWalletConnecting }) => (
+  <div className="wallet-connect-screen">
+    <div className="welcome-card">
+      <h2>Welcome to FixDelhi</h2>
+      <p>Connect your wallet to report civic issues and help improve our city</p>
+      <button 
+        onClick={connectWallet} 
+        disabled={isWalletConnecting}
+        aria-label="Connect wallet"
+        className="connect-wallet-btn"
+      >
+        {isWalletConnecting ? 'Connecting...' : 'Connect Wallet'}
+      </button>
+      <div className="features-grid">
+        <div className="feature-card">
+          <div className="feature-icon">📢</div>
+          <h3>Report Issues</h3>
+          <p>Document problems in your neighborhood</p>
+        </div>
+        <div className="feature-card">
+          <div className="feature-icon">👍</div>
+          <h3>Vote on Issues</h3>
+          <p>Support important community concerns</p>
+        </div>
+        <div className="feature-card">
+          <div className="feature-icon">👀</div>
+          <h3>Track Progress</h3>
+          <p>See how reported issues are being resolved</p>
+        </div>
+      </div>
+    </div>
+  </div>
+);
+
+const Notification = ({ notification, onClose }) => {
   useEffect(() => {
-    localStorage.setItem('fixDelhiState', JSON.stringify(state));
-    document.body.classList.toggle('dark-mode', darkMode);
-  }, [state, darkMode]);
+    if (notification) {
+      const timer = setTimeout(() => {
+        onClose();
+      }, 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [notification, onClose]);
 
-  // Wallet connection handler
-  useEffect(() => {
-    const handleAccountsChanged = (accounts) => {
-      updateState({ currentAccount: accounts[0] || null });
-      showNotification(accounts[0] ? "Wallet connected" : "Wallet disconnected");
-    };
+  if (!notification) return null;
+  
+  return (
+    <div className={`notification ${notification.type}`}>
+      <div className="notification-content">
+        {notification.message}
+        <button onClick={onClose} className="notification-close" aria-label="Close notification">
+          &times;
+        </button>
+      </div>
+    </div>
+  );
+};
 
-    const checkWalletConnection = async () => {
-      if (window.ethereum) {
-        try {
-          const accounts = await window.ethereum.request({ method: 'eth_accounts' });
-          if (accounts.length) {
-            updateState({ currentAccount: accounts[0] });
-          }
-        } catch (error) {
-          showNotification("Error connecting to wallet", "error");
-        }
+const Header = ({ 
+  currentAccount, 
+  darkMode, 
+  showUserProfile, 
+  updateState, 
+  disconnectWallet,
+  isAdmin,
+  toggleViewMode
+}) => {
+  return (
+    <header className={`app-header ${darkMode ? 'dark' : ''}`}>
+      <div className="header-brand">
+        <h1>FixDelhi</h1>
+        {isAdmin && <span className="admin-badge">Admin</span>}
+      </div>
+      <div className="header-actions">
+        {currentAccount && (
+          <>
+            <button 
+              className="wallet-btn"
+              onClick={() => updateState({ showUserProfile: !showUserProfile })}
+              aria-label="User profile"
+            >
+              <span className="wallet-address">{shortenAddress(currentAccount)}</span>
+              <span className="profile-icon">👤</span>
+            </button>
+            
+            {isAdmin && (
+              <button 
+                className="view-toggle-btn"
+                onClick={toggleViewMode}
+                aria-label="Toggle view mode"
+              >
+                Switch to User View
+              </button>
+            )}
+          </>
+        )}
+        <button 
+          className="theme-toggle"
+          onClick={() => updateState({ darkMode: !darkMode })}
+          aria-label={`Toggle ${darkMode ? 'light' : 'dark'} mode`}
+        >
+          {darkMode ? '☀️' : '🌙'}
+        </button>
+        {currentAccount && (
+          <button 
+            className="disconnect-btn"
+            onClick={disconnectWallet} 
+            aria-label="Disconnect wallet"
+          >
+            Disconnect
+          </button>
+        )}
+      </div>
+    </header>
+  );
+};
+
+const UserProfile = ({ 
+  currentAccount, 
+  userProfile, 
+  updateState,
+  showUserProfile
+}) => {
+  const handleInputChange = (e) => {
+    const { name, value } = e.target;
+    updateState(prev => ({
+      userProfile: {
+        ...prev.userProfile,
+        [name]: value
       }
-    };
-
-    checkWalletConnection();
-    if (window.ethereum) {
-      window.ethereum.on('accountsChanged', handleAccountsChanged);
-    }
-
-    return () => {
-      window.ethereum?.removeListener?.('accountsChanged', handleAccountsChanged);
-    };
-  }, []);
-
-  // Helper functions
-  const updateState = useCallback((updates) => {
-    setState(prev => ({ ...prev, ...updates }));
-  }, []);
-
-  const showNotification = useCallback((message, type = "success") => {
-    updateState({ notification: { message, type } });
-    setTimeout(() => updateState({ notification: null }), 5000);
-  }, [updateState]);
-
-  // Wallet connection
-  const connectWallet = async () => {
-    if (!window.ethereum) {
-      showNotification("Please install MetaMask!", "error");
-      return;
-    }
-
-    try {
-      updateState({ isWalletConnecting: true });
-      const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
-      updateState({ currentAccount: accounts[0] });
-      showNotification("Wallet connected successfully!");
-    } catch (error) {
-      showNotification("Failed to connect wallet", "error");
-      console.error("Wallet connection error:", error);
-    } finally {
-      updateState({ isWalletConnecting: false });
-    }
+    }));
   };
 
-  const disconnectWallet = () => {
-    updateState({ currentAccount: null });
-    showNotification("Wallet disconnected");
+  const toggleNotifications = () => {
+    updateState(prev => ({
+      userProfile: {
+        ...prev.userProfile,
+        notificationsEnabled: !prev.userProfile.notificationsEnabled
+      }
+    }));
   };
 
-  // Issue management
-  const handleFileUpload = (e) => {
+  if (!showUserProfile) return null;
+
+  return (
+    <div className="user-profile-modal active">
+      <div className="profile-overlay" onClick={() => updateState({ showUserProfile: false })}></div>
+      <div className="profile-content">
+        <div className="profile-header">
+          <h2>User Profile</h2>
+          <button 
+            onClick={() => updateState({ showUserProfile: false })}
+            className="close-btn"
+            aria-label="Close profile"
+          >
+            &times;
+          </button>
+        </div>
+        
+        <div className="profile-section">
+          <h3>Account Information</h3>
+          <div className="wallet-info">
+            <div className="wallet-icon">👛</div>
+            <div>
+              <p className="wallet-label">Wallet Address</p>
+              <p className="wallet-address">{shortenAddress(currentAccount)}</p>
+            </div>
+          </div>
+        </div>
+        
+        <div className="profile-section">
+          <h3>Profile Settings</h3>
+          <div className="form-group">
+            <label htmlFor="displayName">Display Name</label>
+            <input
+              type="text"
+              id="displayName"
+              name="displayName"
+              value={userProfile.displayName}
+              onChange={handleInputChange}
+              placeholder="Enter your display name"
+            />
+          </div>
+          
+          <div className="form-group">
+            <label htmlFor="bio">Bio</label>
+            <textarea
+              id="bio"
+              name="bio"
+              value={userProfile.bio}
+              onChange={handleInputChange}
+              placeholder="Tell us about yourself"
+              rows="3"
+            />
+          </div>
+        </div>
+        
+        <div className="profile-section">
+          <h3>Notification Preferences</h3>
+          <div className="toggle-group">
+            <span>Email Notifications</span>
+            <label className="toggle-switch">
+              <input
+                type="checkbox"
+                checked={userProfile.notificationsEnabled}
+                onChange={toggleNotifications}
+              />
+              <span className="slider"></span>
+            </label>
+          </div>
+        </div>
+        
+        <div className="profile-actions">
+          <button 
+            className="save-btn"
+            onClick={() => updateState({ showUserProfile: false })}
+          >
+            Save Changes
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const IssueForm = ({ 
+  newIssue, 
+  handleInputChange, 
+  handleFileChange, 
+  handleSubmit, 
+  isSubmitting,
+  CATEGORY_ICONS 
+}) => {
+  const [imagePreview, setImagePreview] = useState('');
+
+  const onFileChange = (e) => {
     const file = e.target.files[0];
-    if (!file) return;
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setImagePreview(reader.result);
+      };
+      reader.readAsDataURL(file);
+    }
+    handleFileChange(e);
+  };
 
-    if (file.size > 2 * 1024 * 1024) {
-      showNotification("File size should not exceed 2MB", "error");
+  return (
+    <form onSubmit={handleSubmit} className="issue-form">
+      <h3>Report New Issue</h3>
+      <div className="form-group">
+        <label htmlFor="title">Title*</label>
+        <input
+          type="text"
+          id="title"
+          name="title"
+          value={newIssue.title}
+          onChange={handleInputChange}
+          required
+          aria-required="true"
+          placeholder="Briefly describe the issue"
+        />
+      </div>
+      <div className="form-group">
+        <label htmlFor="description">Description*</label>
+        <textarea
+          id="description"
+          name="description"
+          value={newIssue.description}
+          onChange={handleInputChange}
+          required
+          aria-required="true"
+          placeholder="Provide detailed information about the issue"
+          rows="4"
+        />
+      </div>
+      <div className="form-row">
+        <div className="form-group">
+          <label htmlFor="category">Category*</label>
+          <select
+            id="category"
+            name="category"
+            value={newIssue.category}
+            onChange={handleInputChange}
+          >
+            {Object.keys(CATEGORY_ICONS).map((category) => (
+              <option key={category} value={category}>
+                {category} {CATEGORY_ICONS[category]}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="form-group">
+          <label htmlFor="location">Location*</label>
+          <input
+            type="text"
+            id="location"
+            name="location"
+            value={newIssue.location}
+            onChange={handleInputChange}
+            required
+            aria-required="true"
+            placeholder="Where is the issue located?"
+          />
+        </div>
+      </div>
+      <div className="form-group">
+        <label htmlFor="image">Image (Optional)</label>
+        {imagePreview && (
+          <div className="image-preview">
+            <img src={imagePreview} alt="Issue preview" />
+            <button 
+              type="button" 
+              className="remove-image-btn"
+              onClick={() => {
+                setImagePreview('');
+                handleInputChange({ target: { name: 'image', value: '' } });
+              }}
+            >
+              Remove
+            </button>
+          </div>
+        )}
+        <div className="file-upload">
+          <label htmlFor="image-upload" className="upload-btn">
+            {imagePreview ? 'Change Image' : 'Upload Image'}
+          </label>
+          <input
+            type="file"
+            id="image-upload"
+            accept="image/*"
+            onChange={onFileChange}
+            aria-label="Upload issue image"
+          />
+        </div>
+        <p className="file-hint">Max 2MB, JPG/PNG recommended</p>
+      </div>
+      <button 
+        type="submit" 
+        className="submit-btn"
+        disabled={isSubmitting}
+      >
+        {isSubmitting ? (
+          <>
+            <span className="spinner"></span> Submitting...
+          </>
+        ) : (
+          'Submit Issue'
+        )}
+      </button>
+    </form>
+  );
+};
+
+const IssueCard = ({ 
+  issue, 
+  upvoteIssue, 
+  currentAccount,
+  CATEGORY_ICONS,
+  onViewDetails,
+  isUpvoted
+}) => {
+  const statusClass = issue.status.toLowerCase().replace(' ', '-');
+
+  return (
+    <div className={`issue-card status-${statusClass}`}>
+      <div className="issue-image" onClick={() => onViewDetails(issue)}>
+        <img src={issue.image} alt={issue.title} />
+        <div className="image-overlay">View Details</div>
+      </div>
+      <div className="issue-content">
+        <div className="issue-header">
+          <h3 onClick={() => onViewDetails(issue)}>{issue.title}</h3>
+          <span className="issue-category">
+            {CATEGORY_ICONS[issue.category]} {issue.category}
+          </span>
+        </div>
+        <p className="issue-description">{issue.description}</p>
+        <div className="issue-meta">
+          <span className="issue-location">📍 {issue.location}</span>
+          <span className={`issue-status ${statusClass}`}>{issue.status}</span>
+        </div>
+        <div className="issue-footer">
+          <div className="vote-section">
+            <button 
+              onClick={(e) => {
+                e.stopPropagation();
+                upvoteIssue(issue.id);
+              }}
+              disabled={!currentAccount}
+              className={`upvote-btn ${isUpvoted ? 'upvoted' : ''}`}
+              aria-label={`Upvote ${issue.title}`}
+            >
+              <span className="thumbs-up">👍</span> 
+              <span className="vote-count">{issue.votes}</span>
+            </button>
+          </div>
+          <div className="action-section">
+            <button 
+              className="details-btn"
+              onClick={() => onViewDetails(issue)}
+            >
+              View Details
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const IssueModal = ({ 
+  issue, 
+  onClose, 
+  upvoteIssue, 
+  currentAccount, 
+  CATEGORY_ICONS,
+  isUpvoted,
+  addComment
+}) => {
+  const [commentText, setCommentText] = useState('');
+
+  if (!issue) return null;
+
+  const handleCommentSubmit = (e) => {
+    e.preventDefault();
+    if (commentText.trim()) {
+      addComment(issue.id, commentText);
+      setCommentText('');
+    }
+  };
+
+  return (
+    <div className="issue-modal">
+      <div className="modal-overlay" onClick={onClose}></div>
+      <div className="modal-content">
+        <button className="modal-close" onClick={onClose} aria-label="Close modal">
+          &times;
+        </button>
+        
+        <div className="modal-header">
+          <h2>{issue.title}</h2>
+          <div className="modal-meta">
+            <span className="category-badge">
+              {CATEGORY_ICONS[issue.category]} {issue.category}
+            </span>
+            <span className={`status-badge status-${issue.status.toLowerCase().replace(' ', '-')}`}>
+              {issue.status}
+            </span>
+          </div>
+        </div>
+        
+        <div className="modal-body">
+          <div className="modal-image">
+            <img src={issue.image} alt={issue.title} />
+          </div>
+          
+          <div className="modal-details">
+            <div className="detail-section">
+              <h3>Description</h3>
+              <p>{issue.description}</p>
+            </div>
+            
+            <div className="detail-section">
+              <h3>Location</h3>
+              <p>📍 {issue.location}</p>
+            </div>
+            
+            <div className="detail-section">
+              <h3>Reported On</h3>
+              <p>{new Date(issue.createdAt).toLocaleDateString('en-IN', {
+                day: 'numeric',
+                month: 'long',
+                year: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+              })}</p>
+            </div>
+            
+            {issue.assignedDepartment && (
+              <div className="detail-section">
+                <h3>Assigned Department</h3>
+                <p>{issue.assignedDepartment}</p>
+              </div>
+            )}
+          </div>
+          
+          <div className="modal-comments">
+            <h3>Comments ({issue.comments.length})</h3>
+            {issue.comments.length > 0 ? (
+              <div className="comments-list">
+                {issue.comments.map(comment => (
+                  <div key={comment.id} className="comment">
+                    <div className="comment-header">
+                      <span className="comment-user">{comment.user}</span>
+                      <span className="comment-time">
+                        {new Date(comment.createdAt || issue.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                    </div>
+                    <div className="comment-text">{comment.text}</div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="no-comments">No comments yet</p>
+            )}
+            
+            <form onSubmit={handleCommentSubmit} className="comment-form">
+              <textarea 
+                placeholder="Add your comment..." 
+                rows="3"
+                value={commentText}
+                onChange={(e) => setCommentText(e.target.value)}
+                required
+              ></textarea>
+              <button type="submit" className="submit-comment">
+                Post Comment
+              </button>
+            </form>
+          </div>
+        </div>
+        
+        <div className="modal-footer">
+          <button 
+            onClick={() => upvoteIssue(issue.id)}
+            disabled={!currentAccount}
+            className={`upvote-btn ${isUpvoted ? 'upvoted' : ''}`}
+          >
+            👍 Upvote ({issue.votes})
+          </button>
+          <button className="close-modal" onClick={onClose}>
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const MainContent = ({ 
+  state, 
+  updateState, 
+  getFilteredAndSortedIssues, 
+  upvoteIssue,
+  CATEGORY_ICONS,
+  currentAccount
+}) => {
+  const {
+    activeTab,
+    showForm,
+    newIssue,
+    isSubmitting,
+    searchTerm,
+    filterCategory,
+    sortBy,
+    selectedIssue
+  } = state.user;
+
+  const filteredIssues = getFilteredAndSortedIssues();
+  const [upvotedIssues, setUpvotedIssues] = useState([]);
+
+  const handleInputChange = (e) => {
+    const { name, value } = e.target;
+    updateState(prev => ({
+      user: {
+        ...prev.user,
+        newIssue: { ...prev.user.newIssue, [name]: value }
+      }
+    }));
+  };
+
+  const handleFileChange = (e) => {
+    const file = e.target.files[0];
+    const validation = validateImageFile(file);
+    
+    if (!validation.valid) {
+      updateState({ notification: { message: validation.error, type: "error" } });
       return;
     }
     
     const reader = new FileReader();
     reader.onload = (event) => {
-      updateState({ newIssue: { ...newIssue, image: event.target.result } });
+      updateState(prev => ({
+        user: {
+          ...prev.user,
+          newIssue: { ...prev.user.newIssue, image: event.target.result }
+        }
+      }));
     };
     reader.readAsDataURL(file);
   };
 
-  const handleInputChange = (e) => {
-    const { name, value } = e.target;
-    updateState({ newIssue: { ...newIssue, [name]: value } });
-  };
-
-  const handleSubmit = async (e) => {
+  const handleSubmit = (e) => {
     e.preventDefault();
-    updateState({ isSubmitting: true });
+    updateState(prev => ({
+      user: { ...prev.user, isSubmitting: true }
+    }));
     
-    try {
-      const issue = {
-        ...newIssue,
-        id: Date.now(),
-        status: "Pending",
-        votes: 0,
-        userAddress: currentAccount,
-        comments: [],
-        image: newIssue.image || "https://images.unsplash.com/photo-1566438480900-0609be27a4be?w=500&auto=format&fit=crop",
-        createdAt: new Date().toISOString()
-      };
-      
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      updateState(prev => ({
-        issues: [...prev.issues, issue],
-        newIssue: DEFAULT_STATE.newIssue,
+    const issue = {
+      ...newIssue,
+      id: Date.now(),
+      status: "Pending",
+      votes: 0,
+      userAddress: currentAccount,
+      comments: [],
+      image: newIssue.image || "https://images.unsplash.com/photo-1566438480900-0609be27a4be?w=500&auto=format&fit=crop",
+      createdAt: new Date().toISOString()
+    };
+    
+    updateState(prev => ({
+      issues: [...prev.issues, issue],
+      user: {
+        ...prev.user,
+        newIssue: DEFAULT_USER_STATE.newIssue,
         showForm: false,
         isSubmitting: false
-      }));
-      showNotification("Issue reported successfully!");
-    } catch (error) {
-      showNotification("Error submitting issue", "error");
-      console.error("Submission error:", error);
-      updateState({ isSubmitting: false });
-    }
+      },
+      notification: { message: "Issue reported successfully!", type: "success" }
+    }));
   };
 
-  const upvoteIssue = (id) => {
+  const viewIssueDetails = (issue) => {
+    updateState(prev => ({
+      user: { ...prev.user, selectedIssue: issue }
+    }));
+  };
+
+  const closeIssueDetails = () => {
+    updateState(prev => ({
+      user: { ...prev.user, selectedIssue: null }
+    }));
+  };
+
+  const handleUpvote = (issueId) => {
+    if (!currentAccount) return;
+    
+    if (upvotedIssues.includes(issueId)) {
+      updateState({
+        notification: { message: "You've already upvoted this issue", type: "warning" }
+      });
+      return;
+    }
+
+    setUpvotedIssues([...upvotedIssues, issueId]);
+    upvoteIssue(issueId);
+  };
+
+  const addComment = (issueId, text) => {
     updateState(prev => ({
       issues: prev.issues.map(issue => 
-        issue.id === id ? { ...issue, votes: issue.votes + 1 } : issue
+        issue.id === issueId 
+          ? {
+              ...issue,
+              comments: [
+                ...issue.comments,
+                {
+                  id: Date.now(),
+                  user: prev.userProfile.displayName,
+                  text,
+                  createdAt: new Date().toISOString()
+                }
+              ]
+            }
+          : issue
       )
     }));
   };
 
-  const updateStatus = (id, newStatus) => {
-    updateState(prev => ({
-      issues: prev.issues.map(issue => 
-        issue.id === id ? { ...issue, status: newStatus } : issue
-      )
-    }));
-  };
+  return (
+    <main className="main-content">
+      <div className="content-controls">
+        <div className="tabs" role="tablist">
+          <button
+            role="tab"
+            aria-selected={activeTab === "all"}
+            className={activeTab === "all" ? "active" : ""}
+            onClick={() => updateState(prev => ({
+              user: { ...prev.user, activeTab: "all" }
+            }))}
+          >
+            All Issues
+          </button>
+          <button
+            role="tab"
+            aria-selected={activeTab === "my"}
+            className={activeTab === "my" ? "active" : ""}
+            onClick={() => updateState(prev => ({
+              user: { ...prev.user, activeTab: "my" }
+            }))}
+            disabled={!currentAccount}
+          >
+            My Reports
+          </button>
+          <button
+            role="tab"
+            aria-selected={activeTab === "pending"}
+            className={activeTab === "pending" ? "active" : ""}
+            onClick={() => updateState(prev => ({
+              user: { ...prev.user, activeTab: "pending" }
+            }))}
+          >
+            Pending
+          </button>
+        </div>
 
-  // Filter and sort issues
-  const getFilteredAndSortedIssues = useCallback(() => {
-    let filtered = [...issues];
+        <div className="filters">
+          <div className="search-box">
+            <input
+              type="text"
+              placeholder="Search issues..."
+              value={searchTerm}
+              onChange={(e) => updateState(prev => ({
+                user: { ...prev.user, searchTerm: e.target.value }
+              }))}
+              aria-label="Search issues"
+            />
+            <span className="search-icon">🔍</span>
+          </div>
+          
+          <select
+            value={filterCategory}
+            onChange={(e) => updateState(prev => ({
+              user: { ...prev.user, filterCategory: e.target.value }
+            }))}
+            aria-label="Filter by category"
+            className="filter-select"
+          >
+            <option value="All">All Categories</option>
+            {Object.keys(CATEGORY_ICONS).map((category) => (
+              <option key={category} value={category}>
+                {category}
+              </option>
+            ))}
+          </select>
+          
+          <select
+            value={sortBy}
+            onChange={(e) => updateState(prev => ({
+              user: { ...prev.user, sortBy: e.target.value }
+            }))}
+            aria-label="Sort by"
+            className="sort-select"
+          >
+            {SORT_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <button
+          className={`report-issue-btn ${showForm ? 'cancel' : ''}`}
+          onClick={() => updateState(prev => ({
+            user: { ...prev.user, showForm: !prev.user.showForm }
+          }))}
+          disabled={!currentAccount}
+          aria-label={showForm ? "Cancel issue form" : "Report new issue"}
+        >
+          {showForm ? (
+            <>
+              <span className="icon">✕</span> Cancel
+            </>
+          ) : (
+            <>
+              <span className="icon">+</span> Report Issue
+            </>
+          )}
+        </button>
+      </div>
+
+      {showForm && (
+        <IssueForm
+          newIssue={newIssue}
+          handleInputChange={handleInputChange}
+          handleFileChange={handleFileChange}
+          handleSubmit={handleSubmit}
+          isSubmitting={isSubmitting}
+          CATEGORY_ICONS={CATEGORY_ICONS}
+        />
+      )}
+
+      <div className="issues-list">
+        {filteredIssues.length > 0 ? (
+          filteredIssues.map((issue) => (
+            <IssueCard
+              key={issue.id}
+              issue={issue}
+              upvoteIssue={handleUpvote}
+              currentAccount={currentAccount}
+              CATEGORY_ICONS={CATEGORY_ICONS}
+              onViewDetails={viewIssueDetails}
+              isUpvoted={upvotedIssues.includes(issue.id)}
+            />
+          ))
+        ) : (
+          <div className="no-issues">
+            <div className="no-issues-icon">📭</div>
+            <h3>No issues found</h3>
+            <p>Try adjusting your filters or report a new issue</p>
+            {!currentAccount && (
+              <p className="connect-wallet-prompt">
+                Connect your wallet to report issues
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+
+      {selectedIssue && (
+        <IssueModal
+          issue={selectedIssue}
+          onClose={closeIssueDetails}
+          upvoteIssue={handleUpvote}
+          currentAccount={currentAccount}
+          CATEGORY_ICONS={CATEGORY_ICONS}
+          isUpvoted={upvotedIssues.includes(selectedIssue.id)}
+          addComment={addComment}
+        />
+      )}
+    </main>
+  );
+};
+
+const AdminActionForm = ({ 
+  selectedAction, 
+  selectedIssue, 
+  actionFormData, 
+  handleActionInputChange, 
+  handleActionSubmit, 
+  handleAdminAction,
+  STATUS_OPTIONS,
+  DEPARTMENTS
+}) => {
+  if (!selectedAction) return null;
+  
+  switch (selectedAction) {
+    case 'status_update':
+      return (
+        <div className="admin-action-form-container">
+          <form onSubmit={handleActionSubmit} className="admin-form">
+            <h3>Update Status for: <span className="issue-title">{selectedIssue.title}</span></h3>
+            
+            <div className="form-group">
+              <label htmlFor="newStatus">New Status*</label>
+              <select
+                id="newStatus"
+                name="newStatus"
+                value={actionFormData.newStatus || ''}
+                onChange={handleActionInputChange}
+                required
+                className="status-select"
+              >
+                <option value="">Select status</option>
+                {STATUS_OPTIONS.map(status => (
+                  <option key={status} value={status}>{status}</option>
+                ))}
+              </select>
+            </div>
+            
+            {actionFormData.newStatus === 'Rejected' && (
+              <div className="form-group">
+                <label htmlFor="rejectionReason">Rejection Reason*</label>
+                <textarea
+                  id="rejectionReason"
+                  name="rejectionReason"
+                  value={actionFormData.rejectionReason || ''}
+                  onChange={handleActionInputChange}
+                  required
+                  placeholder="Explain why this request is being rejected"
+                  rows="4"
+                />
+              </div>
+            )}
+            
+            <div className="form-actions">
+              <button 
+                type="button" 
+                className="cancel-btn"
+                onClick={() => handleAdminAction('cancel')}
+              >
+                Cancel
+              </button>
+              <button 
+                type="submit" 
+                className="submit-btn"
+              >
+                Update Status
+              </button>
+            </div>
+          </form>
+        </div>
+      );
+      
+    case 'assign_department':
+      return (
+        <div className="admin-action-form-container">
+          <form onSubmit={handleActionSubmit} className="admin-form">
+            <h3>Assign Department for: <span className="issue-title">{selectedIssue.title}</span></h3>
+            
+            <div className="form-group">
+              <label htmlFor="departmentAssignment">Department*</label>
+              <select
+                id="departmentAssignment"
+                name="departmentAssignment"
+                value={actionFormData.departmentAssignment || ''}
+                onChange={handleActionInputChange}
+                required
+                className="department-select"
+              >
+                <option value="">Select department</option>
+                {DEPARTMENTS.map(dept => (
+                  <option key={dept} value={dept}>{dept}</option>
+                ))}
+              </select>
+            </div>
+            
+            <div className="form-actions">
+              <button 
+                type="button" 
+                className="cancel-btn"
+                onClick={() => handleAdminAction('cancel')}
+              >
+                Cancel
+              </button>
+              <button 
+                type="submit" 
+                className="submit-btn"
+              >
+                Assign Department
+              </button>
+            </div>
+          </form>
+        </div>
+      );
+      
+    default:
+      return null;
+  }
+};
+
+const AdminIssueCard = ({ 
+  issue, 
+  handleAdminAction,
+  CATEGORY_ICONS 
+}) => {
+  const getDepartment = () => {
+    if (issue.assignedDepartment) return issue.assignedDepartment;
     
-    // Filter by tab
-    if (activeTab === "my") {
-      filtered = filtered.filter(issue => issue.userAddress === currentAccount);
-    } else if (activeTab !== "all") {
-      filtered = filtered.filter(issue => issue.status.toLowerCase() === activeTab);
+    switch (issue.category) {
+      case 'Road': return 'Transport';
+      case 'Sanitation': return 'Sanitation';
+      case 'Water': return 'Water';
+      case 'Electricity': return 'Power';
+      case 'Green Space': return 'Parks';
+      case 'Public Toilet': return 'Sanitation';
+      default: return 'General';
     }
+  };
+  
+  const statusClass = issue.status.toLowerCase().replace(' ', '-');
+  const createdAtDate = new Date(issue.createdAt);
+  const timeAgo = Math.floor((new Date() - createdAtDate) / (1000 * 60 * 60 * 24));
+  
+  return (
+    <div className={`admin-issue-card status-${statusClass}`}>
+      <div className="admin-issue-header">
+        <h3>{issue.title}</h3>
+        <div className="issue-meta">
+          <span className="issue-id">ID: {issue.id}</span>
+          <span className={`status-badge ${statusClass}`}>{issue.status}</span>
+        </div>
+      </div>
+      
+      <div className="admin-issue-content">
+        <div className="issue-image">
+          <img src={issue.image} alt={issue.title} />
+        </div>
+        
+        <div className="issue-details">
+          <div className="detail-row">
+            <span className="detail-label">Category:</span>
+            <span className="detail-value">
+              {CATEGORY_ICONS[issue.category]} {issue.category}
+            </span>
+          </div>
+          
+          <div className="detail-row">
+            <span className="detail-label">Department:</span>
+            <span className="detail-value">{getDepartment()}</span>
+          </div>
+          
+          <div className="detail-row">
+            <span className="detail-label">Location:</span>
+            <span className="detail-value">📍 {issue.location}</span>
+          </div>
+          
+          <div className="detail-row">
+            <span className="detail-label">Reported:</span>
+            <span className="detail-value">
+              {createdAtDate.toLocaleDateString()} ({timeAgo} day{timeAgo !== 1 ? 's' : ''} ago)
+            </span>
+          </div>
+          
+          <div className="detail-row">
+            <span className="detail-label">Votes:</span>
+            <span className="detail-value">👍 {issue.votes}</span>
+          </div>
+        </div>
+      </div>
+      
+      <div className="admin-issue-actions">
+        <button 
+          onClick={() => handleAdminAction('status_update', issue)}
+          className="action-btn primary"
+          aria-label={`Update status for ${issue.title}`}
+        >
+          Update Status
+        </button>
+        
+        <button 
+          onClick={() => handleAdminAction('assign_department', issue)}
+          className="action-btn secondary"
+          aria-label={`Assign department for ${issue.title}`}
+        >
+          Assign Department
+        </button>
+      </div>
+    </div>
+  );
+};
+
+const AdminDashboard = ({ 
+  state, 
+  updateAdminState,
+  handleAdminAction,
+  handleActionInputChange,
+  handleActionSubmit,
+  CATEGORY_ICONS,
+  STATUS_OPTIONS,
+  DEPARTMENTS,
+  toggleViewMode
+}) => {
+  const { 
+    adminView, 
+    departmentFilter, 
+    statusFilter,
+    selectedAction,
+    selectedIssue,
+    actionFormData
+  } = state.admin;
+
+  const getAdminIssues = useCallback(() => {
+    let filtered = [...state.issues];
     
-    // Filter by search
-    if (searchTerm) {
-      const term = searchTerm.toLowerCase();
+    if (adminView === 'appeals') {
       filtered = filtered.filter(issue => 
-        issue.title.toLowerCase().includes(term) ||
-        issue.description.toLowerCase().includes(term) ||
-        issue.location.toLowerCase().includes(term)
+        ['Green Space', 'Public Toilet'].includes(issue.category)
       );
     }
     
-    // Filter by category
-    if (filterCategory !== "All") {
-      filtered = filtered.filter(issue => issue.category === filterCategory);
+    if (departmentFilter !== 'All') {
+      filtered = filtered.filter(issue => {
+        if (issue.assignedDepartment) {
+          return issue.assignedDepartment === departmentFilter;
+        }
+        
+        // Default department assignments based on category
+        switch (issue.category) {
+          case 'Road': return departmentFilter === 'Transport';
+          case 'Sanitation': return departmentFilter === 'Sanitation';
+          case 'Water': return departmentFilter === 'Water';
+          case 'Electricity': return departmentFilter === 'Power';
+          case 'Green Space': return departmentFilter === 'Parks';
+          case 'Public Toilet': return departmentFilter === 'Sanitation';
+          default: return departmentFilter === 'General';
+        }
+      });
     }
     
-    // Sort by selected option
-    switch (sortBy) {
+    if (statusFilter !== 'All') {
+      filtered = filtered.filter(issue => issue.status === statusFilter);
+    }
+    
+    return filtered;
+  }, [state.issues, adminView, departmentFilter, statusFilter]);
+
+  const adminIssues = getAdminIssues();
+
+  return (
+    <div className="admin-dashboard">
+      <div className="admin-header">
+        <h2>Administrator Dashboard</h2>
+        <div className="admin-controls">
+          <button 
+            onClick={() => updateAdminState({ adminView: 'issues' })}
+            className={adminView === 'issues' ? 'active' : ''}
+          >
+            All Issues
+          </button>
+          <button 
+            onClick={() => updateAdminState({ adminView: 'appeals' })}
+            className={adminView === 'appeals' ? 'active' : ''}
+          >
+            Public Appeals
+          </button>
+          <button 
+            onClick={toggleViewMode}
+            className="view-toggle-btn"
+          >
+            Switch to User View
+          </button>
+        </div>
+      </div>
+
+      <div className="admin-filters">
+        <div className="filter-group">
+          <label htmlFor="departmentFilter">Filter by Department:</label>
+          <select
+            id="departmentFilter"
+            value={departmentFilter}
+            onChange={(e) => updateAdminState({ departmentFilter: e.target.value })}
+          >
+            <option value="All">All Departments</option>
+            {DEPARTMENTS.map(dept => (
+              <option key={dept} value={dept}>{dept}</option>
+            ))}
+          </select>
+        </div>
+
+        <div className="filter-group">
+          <label htmlFor="statusFilter">Filter by Status:</label>
+          <select
+            id="statusFilter"
+            value={statusFilter}
+            onChange={(e) => updateAdminState({ statusFilter: e.target.value })}
+          >
+            <option value="All">All Statuses</option>
+            {STATUS_OPTIONS.map(status => (
+              <option key={status} value={status}>{status}</option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      <div className="admin-issues-list">
+        {adminIssues.length > 0 ? (
+          adminIssues.map(issue => (
+            <AdminIssueCard
+              key={issue.id}
+              issue={issue}
+              handleAdminAction={handleAdminAction}
+              CATEGORY_ICONS={CATEGORY_ICONS}
+            />
+          ))
+        ) : (
+          <div className="no-issues">
+            <p>No issues found matching your filters</p>
+          </div>
+        )}
+      </div>
+
+      {selectedAction && (
+        <AdminActionForm
+          selectedAction={selectedAction}
+          selectedIssue={selectedIssue}
+          actionFormData={actionFormData}
+          handleActionInputChange={handleActionInputChange}
+          handleActionSubmit={handleActionSubmit}
+          handleAdminAction={handleAdminAction}
+          STATUS_OPTIONS={STATUS_OPTIONS}
+          DEPARTMENTS={DEPARTMENTS}
+        />
+      )}
+    </div>
+  );
+};
+
+// Main App Component
+const App = () => {
+  const [state, setState] = useState(DEFAULT_STATE);
+
+  const updateState = (newState) => {
+    setState(prev => ({ ...prev, ...newState }));
+  };
+
+  const updateAdminState = (newAdminState) => {
+    setState(prev => ({
+      ...prev,
+      admin: { ...prev.admin, ...newAdminState }
+    }));
+  };
+
+  const updateUserState = (newUserState) => {
+    setState(prev => ({
+      ...prev,
+      user: { ...prev.user, ...newUserState }
+    }));
+  };
+
+  const connectWallet = async () => {
+    updateState({ isWalletConnecting: true });
+    try {
+      // Simulate wallet connection
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      const mockAccount = "0x1234567890123456789012345678901234567890";
+      const isAdmin = ADMIN_ADDRESSES.includes(mockAccount.toLowerCase());
+      
+      updateState({
+        currentAccount: mockAccount,
+        isWalletConnecting: false,
+        isAdmin,
+        notification: {
+          message: `Wallet connected ${isAdmin ? 'as admin' : 'successfully'}`,
+          type: "success"
+        }
+      });
+    } catch (error) {
+      updateState({
+        isWalletConnecting: false,
+        notification: {
+          message: "Failed to connect wallet",
+          type: "error"
+        }
+      });
+    }
+  };
+
+  const disconnectWallet = () => {
+    updateState({
+      currentAccount: null,
+      isAdmin: false,
+      notification: {
+        message: "Wallet disconnected",
+        type: "info"
+      }
+    });
+  };
+
+  const closeNotification = () => {
+    updateState({ notification: null });
+  };
+
+  const toggleViewMode = () => {
+    updateState({
+      isAdmin: !state.isAdmin,
+      notification: {
+        message: `Switched to ${!state.isAdmin ? 'admin' : 'user'} view`,
+        type: "info"
+      }
+    });
+  };
+
+  const upvoteIssue = (issueId) => {
+    updateState(prev => ({
+      issues: prev.issues.map(issue =>
+        issue.id === issueId
+          ? { ...issue, votes: issue.votes + 1 }
+          : issue
+      ),
+      notification: {
+        message: "Issue upvoted successfully!",
+        type: "success"
+      }
+    }));
+  };
+
+  const getFilteredAndSortedIssues = useCallback(() => {
+    let filtered = [...state.issues];
+
+    // Filter by active tab
+    if (state.user.activeTab === "my") {
+      filtered = filtered.filter(
+        issue => issue.userAddress === state.currentAccount
+      );
+    } else if (state.user.activeTab === "pending") {
+      filtered = filtered.filter(issue => issue.status === "Pending");
+    }
+
+    // Filter by category
+    if (state.user.filterCategory !== "All") {
+      filtered = filtered.filter(
+        issue => issue.category === state.user.filterCategory
+      );
+    }
+
+    // Filter by search term
+    if (state.user.searchTerm) {
+      const term = state.user.searchTerm.toLowerCase();
+      filtered = filtered.filter(
+        issue =>
+          issue.title.toLowerCase().includes(term) ||
+          issue.description.toLowerCase().includes(term) ||
+          issue.location.toLowerCase().includes(term)
+      );
+    }
+
+    // Sort issues
+    switch (state.user.sortBy) {
       case "newest":
         filtered.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
         break;
@@ -277,651 +1453,160 @@ function App() {
       default:
         break;
     }
-    
+
     return filtered;
-  }, [issues, activeTab, currentAccount, searchTerm, filterCategory, sortBy]);
+  }, [state.issues, state.user, state.currentAccount]);
 
-  // Components
-  const WalletConnectScreen = () => (
-    <div className={`wallet-connect-screen ${darkMode ? 'dark-mode' : ''}`}>
-      <div className="wallet-connect-container">
-        <h1>Welcome to FixDelhi! 🏙️</h1>
-        <p>Connect your wallet to report and track civic issues in Delhi</p>
-        
-        <button 
-          onClick={connectWallet} 
-          className="connect-wallet-btn"
-          disabled={isWalletConnecting}
-        >
-          {isWalletConnecting ? "Connecting..." : "Connect Wallet"}
-        </button>
-        
-        {!window.ethereum && (
-          <div className="metamask-install-prompt">
-            <p>You need MetaMask to use this application</p>
-            <a 
-              href="https://metamask.io/download/" 
-              target="_blank" 
-              rel="noopener noreferrer"
-              className="install-link"
-            >
-              Install MetaMask
-            </a>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-
-  const Header = () => (
-    <header className="header">
-      <div className="header-content">
-        <h1>🏙️ FixDelhi</h1>
-        <p>Report and track civic issues in Delhi</p>
-      </div>
-      
-      <div className="app-controls">
-        <button 
-          onClick={() => updateState({ darkMode: !darkMode })} 
-          className="icon-btn" 
-          title="Toggle Dark Mode"
-        >
-          {darkMode ? "☀️" : "🌙"}
-        </button>
-        
-        <button 
-          onClick={() => updateState({ showStats: !showStats })} 
-          className="icon-btn" 
-          title="View Statistics"
-        >
-          📊
-        </button>
-        
-        <button 
-          onClick={() => updateState({ showMap: !showMap })} 
-          className="icon-btn" 
-          title="View Issues Map"
-        >
-          🗺️
-        </button>
-        
-        <div className="wallet-info">
-          <button 
-            onClick={() => updateState({ showUserProfile: !showUserProfile })} 
-            className="profile-btn" 
-            title="User Profile"
-          >
-            👤 {userProfile.displayName}
-          </button>
-          <span className="wallet-address">
-            {`${currentAccount.substring(0, 6)}...${currentAccount.substring(currentAccount.length - 4)}`}
-          </span>
-          <button onClick={disconnectWallet} className="disconnect-btn" title="Disconnect wallet">
-            Disconnect
-          </button>
-        </div>
-      </div>
-    </header>
-  );
-
-  const StatsDashboard = () => {
-    const stats = {
-      totalIssues: issues.length,
-      pendingIssues: issues.filter(issue => issue.status === "Pending").length,
-      inProgressIssues: issues.filter(issue => issue.status === "In Progress").length,
-      resolvedIssues: issues.filter(issue => issue.status === "Resolved").length,
-      categoryCounts: Object.keys(CATEGORY_ICONS).reduce((acc, category) => {
-        acc[category] = issues.filter(issue => issue.category === category).length;
-        return acc;
-      }, {}),
-      myIssues: issues.filter(issue => issue.userAddress === currentAccount).length
-    };
-    
-    return (
-      <div className="stats-dashboard">
-        <div className="stats-header">
-          <h2>📊 Issue Statistics</h2>
-          <button onClick={() => updateState({ showStats: false })} className="close-btn">×</button>
-        </div>
-        
-        <div className="stats-content">
-          <div className="stats-cards">
-            {[
-              { label: "Total Issues", value: stats.totalIssues },
-              { label: "Pending", value: stats.pendingIssues, className: "pending" },
-              { label: "In Progress", value: stats.inProgressIssues, className: "in-progress" },
-              { label: "Resolved", value: stats.resolvedIssues, className: "resolved" },
-              { label: "My Issues", value: stats.myIssues }
-            ].map((stat, index) => (
-              <div key={index} className="stat-card">
-                <h3>{stat.label}</h3>
-                <p className={`stat-value ${stat.className || ''}`}>{stat.value}</p>
-              </div>
-            ))}
-          </div>
-          
-          <div className="stats-charts">
-            <div className="category-chart">
-              <h3>Issues by Category</h3>
-              <div className="category-bars">
-                {Object.entries(stats.categoryCounts).map(([category, count]) => (
-                  <div key={category} className="category-bar-container">
-                    <div className="category-label">
-                      <span>{CATEGORY_ICONS[category]} {category}</span>
-                      <span>{count}</span>
-                    </div>
-                    <div className="category-bar-bg">
-                      <div 
-                        className="category-bar"
-                        style={{ width: `${(count / stats.totalIssues) * 100}%` }}
-                      ></div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  };
-
-  const MapView = () => (
-    <div className="map-container">
-      <div className="map-header">
-        <h2>🗺️ Issue Map</h2>
-        <button onClick={() => updateState({ showMap: false })} className="close-btn">×</button>
-      </div>
-      
-      <div className="map-placeholder">
-        <div className="map-info">
-          <p>Interactive map showing all reported issues across Delhi</p>
-          <p className="map-note">Map integration would display real issue locations here</p>
-        </div>
-        
-        <div className="map-legend">
-          <h4>Legend</h4>
-          <div className="legend-items">
-            {Object.entries(CATEGORY_ICONS).map(([category, icon]) => (
-              <div key={category} className="legend-item">
-                <span className="legend-icon">{icon}</span>
-                <span>{category}</span>
-              </div>
-            ))}
-          </div>
-          
-          <div className="status-legend">
-            {["Pending", "In Progress", "Resolved"].map(status => (
-              <div key={status} className="status-item">
-                <span className={`status-dot ${status.toLowerCase().replace(' ', '-')}`}></span> {status}
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-
-  const UserProfile = () => {
-    const [formData, setFormData] = useState(userProfile);
-
-    const handleChange = (e) => {
-      const { name, value, type, checked } = e.target;
-      setFormData(prev => ({
-        ...prev,
-        [name]: type === 'checkbox' ? checked : value
-      }));
-    };
-
-    const handleSubmit = (e) => {
-      e.preventDefault();
-      updateState({ 
-        userProfile: { ...userProfile, ...formData },
-        showUserProfile: false
+  const handleAdminAction = (action, issue = null) => {
+    if (action === 'cancel') {
+      updateAdminState({
+        selectedAction: null,
+        selectedIssue: null,
+        actionFormData: DEFAULT_ADMIN_STATE.actionFormData
       });
-      showNotification("Profile updated successfully!");
-    };
+      return;
+    }
 
-    const userStats = {
-      reported: issues.filter(issue => issue.userAddress === currentAccount).length,
-      resolved: issues.filter(issue => 
-        issue.userAddress === currentAccount && issue.status === "Resolved"
-      ).length,
-      comments: issues.reduce((count, issue) => 
-        count + issue.comments.filter(comment => comment.user === currentAccount).length, 
-      0)
-    };
-
-    return (
-      <div className="user-profile-modal">
-        <div className="profile-header">
-          <h2>👤 User Profile</h2>
-          <button onClick={() => updateState({ showUserProfile: false })} className="close-btn">×</button>
-        </div>
-        
-        <div className="profile-content">
-          <form onSubmit={handleSubmit}>
-            <div className="form-group">
-              <label>Display Name</label>
-              <input 
-                type="text" 
-                name="displayName"
-                value={formData.displayName}
-                onChange={handleChange}
-                placeholder="How you want to be known"
-                maxLength={20}
-                required
-              />
-            </div>
-            
-            <div className="form-group">
-              <label>Bio</label>
-              <textarea
-                name="bio"
-                value={formData.bio}
-                onChange={handleChange}
-                placeholder="Tell us about yourself (optional)"
-                maxLength={150}
-              />
-            </div>
-            
-            <div className="form-group checkbox-group">
-              <label>
-                <input 
-                  type="checkbox" 
-                  name="notificationsEnabled"
-                  checked={formData.notificationsEnabled}
-                  onChange={handleChange}
-                />
-                Enable notifications
-              </label>
-            </div>
-            
-            <div className="profile-stats">
-              <h3>Your Stats</h3>
-              <div className="stats-items">
-                {[
-                  { label: "Issues reported:", value: userStats.reported },
-                  { label: "Resolved issues:", value: userStats.resolved },
-                  { label: "Comments made:", value: userStats.comments }
-                ].map((stat, index) => (
-                  <div key={index} className="stat-item">
-                    <span>{stat.label}</span>
-                    <span>{stat.value}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-            
-            <div className="wallet-connection">
-              <h3>Connected Wallet</h3>
-              <p className="wallet-address">{currentAccount}</p>
-            </div>
-            
-            <button type="submit" className="save-profile-btn">Save Profile</button>
-          </form>
-        </div>
-      </div>
-    );
+    if (issue) {
+      updateAdminState({
+        selectedAction: action,
+        selectedIssue: issue
+      });
+    }
   };
 
-  const IssueCard = ({ issue }) => {
-    const [commentText, setCommentText] = useState("");
-
-    const shareIssue = () => {
-      if (navigator.share) {
-        navigator.share({
-          title: `FixDelhi: ${issue.title}`,
-          text: `Check out this civic issue in Delhi: ${issue.title} at ${issue.location}`,
-          url: `https://fixdelhi.app/issue/${issue.id}`
-        }).catch(console.error);
-      } else {
-        const shareText = `Check out this civic issue in Delhi: ${issue.title} at ${issue.location} - https://fixdelhi.app/issue/${issue.id}`;
-        navigator.clipboard.writeText(shareText)
-          .then(() => showNotification("Share link copied to clipboard!"))
-          .catch(() => showNotification("Failed to copy share link", "error"));
+  const handleActionInputChange = (e) => {
+    const { name, value } = e.target;
+    updateAdminState({
+      actionFormData: {
+        ...state.admin.actionFormData,
+        [name]: value
       }
-    };
+    });
+  };
 
-    const handleAddComment = () => {
-      if (!commentText.trim()) return;
+  const handleActionSubmit = (e) => {
+    e.preventDefault();
+    const { selectedAction, selectedIssue, actionFormData } = state.admin;
+
+    if (selectedAction === 'status_update') {
       updateState(prev => ({
-        issues: prev.issues.map(i => 
-          i.id === issue.id 
-            ? { 
-                ...i, 
-                comments: [...i.comments, { 
-                  id: Date.now(), 
-                  user: currentAccount || "Anonymous", 
-                  text: commentText 
-                }] 
-              } 
-            : i
-        )
+        issues: prev.issues.map(issue =>
+          issue.id === selectedIssue.id
+            ? {
+                ...issue,
+                status: actionFormData.newStatus,
+                ...(actionFormData.newStatus === 'Rejected' && {
+                  comments: [
+                    ...issue.comments,
+                    {
+                      id: Date.now(),
+                      user: "Administrator",
+                      text: `Status changed to Rejected. Reason: ${actionFormData.rejectionReason}`,
+                      createdAt: new Date().toISOString()
+                    }
+                  ]
+                })
+              }
+            : issue
+        ),
+        notification: {
+          message: `Status updated to ${actionFormData.newStatus}`,
+          type: "success"
+        }
       }));
-      setCommentText("");
-    };
+    } else if (selectedAction === 'assign_department') {
+      updateState(prev => ({
+        issues: prev.issues.map(issue =>
+          issue.id === selectedIssue.id
+            ? {
+                ...issue,
+                assignedDepartment: actionFormData.departmentAssignment,
+                status: "In Progress",
+                comments: [
+                  ...issue.comments,
+                    {
+                      id: Date.now(),
+                      user: "Administrator",
+                      text: `Assigned to ${actionFormData.departmentAssignment} department`,
+                      createdAt: new Date().toISOString()
+                    }
+                  ]
+              }
+            : issue
+        ),
+        notification: {
+          message: `Issue assigned to ${actionFormData.departmentAssignment}`,
+          type: "success"
+        }
+      }));
+    }
 
-    return (
-      <div className={`issue-card status-${issue.status.toLowerCase().replace(' ', '-')}`}>
-        <div className="issue-header">
-          <div className="title-with-icon">
-            <span className="category-icon">{CATEGORY_ICONS[issue.category]}</span>
-            <h3>{issue.title}</h3>
-          </div>
-          <span className="status-badge">{issue.status}</span>
-        </div>
-        
-        <p className="issue-description">{issue.description}</p>
-        
-        <div className="issue-meta">
-          <span>📍 {issue.location}</span>
-          <span>🏷️ {issue.category}</span>
-          {issue.userAddress === currentAccount && (
-            <span className="your-issue">Your Submission</span>
-          )}
-          <span className="issue-date">
-            📅 {new Date(issue.createdAt).toLocaleDateString()}
-          </span>
-        </div>
-        
-        <img src={issue.image} alt={issue.title} className="issue-image" />
-        
-        <div className="issue-actions">
-          <div className="action-buttons">
-            <button className="vote-btn" onClick={() => upvoteIssue(issue.id)}>
-              👍 Upvote ({issue.votes})
-            </button>
-            
-            <button className="share-btn" onClick={shareIssue}>
-              📤 Share
-            </button>
-          </div>
-          
-          <details className="comments-section">
-            <summary>Comments ({issue.comments.length})</summary>
-            <div className="comments-list">
-              {issue.comments.map(comment => (
-                <div key={comment.id} className="comment">
-                  <strong>
-                    {comment.user === currentAccount 
-                      ? userProfile.displayName 
-                      : `${comment.user.substring(0, 6)}...`}
-                  </strong>: {comment.text}
-                </div>
-              ))}
-              <div className="add-comment">
-                <input 
-                  type="text" 
-                  placeholder="Add a comment..." 
-                  value={commentText}
-                  onChange={(e) => setCommentText(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && handleAddComment()}
-                />
-                <button onClick={handleAddComment}>Post</button>
-              </div>
-            </div>
-          </details>
-          
-          {issue.userAddress === currentAccount && (
-            <div className="status-controls">
-              <label>Update Status:</label>
-              <select
-                value={issue.status}
-                onChange={(e) => updateStatus(issue.id, e.target.value)}
-              >
-                {STATUS_OPTIONS.map(option => (
-                  <option key={option} value={option}>{option}</option>
-                ))}
-              </select>
-            </div>
-          )}
-        </div>
-      </div>
-    );
+    // Reset action form
+    updateAdminState({
+      selectedAction: null,
+      selectedIssue: null,
+      actionFormData: DEFAULT_ADMIN_STATE.actionFormData
+    });
   };
-
-  const MainContent = () => {
-    const filteredIssues = getFilteredAndSortedIssues();
-
-    return (
-      <main className="main-content">
-        <div className="controls">
-          <div className="tabs">
-            {["all", "my", "pending", "in progress", "resolved"].map(tab => (
-              <button 
-                key={tab}
-                className={activeTab === tab ? "active" : ""}
-                onClick={() => updateState({ activeTab: tab })}
-              >
-                {tab === "all" ? "All Issues" : 
-                 tab === "my" ? "My Complaints" : 
-                 tab.charAt(0).toUpperCase() + tab.slice(1)}
-              </button>
-            ))}
-          </div>
-          
-          <button 
-            className="primary-btn" 
-            onClick={() => updateState({ showForm: !showForm })}
-          >
-            {showForm ? "Cancel" : "Report New Issue"}
-          </button>
-        </div>
-
-        <div className="search-filter-container">
-          <div className="search-bar">
-            <input
-              type="text"
-              placeholder="Search issues..."
-              value={searchTerm}
-              onChange={(e) => updateState({ searchTerm: e.target.value })}
-            />
-            {searchTerm && (
-              <button 
-                className="clear-search" 
-                onClick={() => updateState({ searchTerm: "" })}
-              >
-                ×
-              </button>
-            )}
-          </div>
-          
-          <div className="filter-controls">
-            <div className="filter-group">
-              <label>Category:</label>
-              <select
-                value={filterCategory}
-                onChange={(e) => updateState({ filterCategory: e.target.value })}
-              >
-                <option value="All">All Categories</option>
-                {Object.keys(CATEGORY_ICONS).map(category => (
-                  <option key={category} value={category}>{category}</option>
-                ))}
-              </select>
-            </div>
-            
-            <div className="filter-group">
-              <label>Sort by:</label>
-              <select
-                value={sortBy}
-                onChange={(e) => updateState({ sortBy: e.target.value })}
-              >
-                {SORT_OPTIONS.map(option => (
-                  <option key={option.value} value={option.value}>{option.label}</option>
-                ))}
-              </select>
-            </div>
-          </div>
-        </div>
-
-        {showForm && (
-          <div className="issue-form">
-            <h2>Report New Issue</h2>
-            <form onSubmit={handleSubmit}>
-              <div className="form-group">
-                <label>Title*</label>
-                <input
-                  type="text"
-                  name="title"
-                  value={newIssue.title}
-                  onChange={handleInputChange}
-                  required
-                  placeholder="Brief title of the issue"
-                />
-              </div>
-              
-              <div className="form-group">
-                <label>Description*</label>
-                <textarea
-                  name="description"
-                  value={newIssue.description}
-                  onChange={handleInputChange}
-                  required
-                  placeholder="Detailed description of the issue"
-                />
-              </div>
-              
-              <div className="form-row">
-                <div className="form-group">
-                  <label>Category*</label>
-                  <select
-                    name="category"
-                    value={newIssue.category}
-                    onChange={handleInputChange}
-                  >
-                    {Object.keys(CATEGORY_ICONS).map(category => (
-                      <option key={category} value={category}>{category}</option>
-                    ))}
-                  </select>
-                </div>
-                
-                <div className="form-group">
-                  <label>Location*</label>
-                  <input
-                    type="text"
-                    name="location"
-                    value={newIssue.location}
-                    onChange={handleInputChange}
-                    required
-                    placeholder="Where is the issue located?"
-                  />
-                </div>
-              </div>
-              
-              <div className="form-group">
-                <label>Upload Image</label>
-                <input 
-                  type="file" 
-                  accept="image/*" 
-                  onChange={handleFileUpload} 
-                  aria-label="Upload an image of the issue"
-                />
-                {newIssue.image && (
-                  <div className="image-preview">
-                    <img src={newIssue.image} alt="Preview" />
-                  </div>
-                )}
-              </div>
-              
-              <button 
-                type="submit" 
-                className="submit-btn" 
-                disabled={isSubmitting}
-              >
-                {isSubmitting ? "Submitting..." : "Submit Issue"}
-              </button>
-            </form>
-          </div>
-        )}
-
-        <div className="issues-grid">
-          {filteredIssues.length > 0 ? (
-            filteredIssues.map(issue => (
-              <IssueCard key={issue.id} issue={issue} />
-            ))
-          ) : (
-            <div className="no-issues">
-              {searchTerm || filterCategory !== "All" ? (
-                <>
-                  <p>No issues found matching your search criteria</p>
-                  <button 
-                    className="clear-filters-btn"
-                    onClick={() => updateState({ 
-                      searchTerm: "",
-                      filterCategory: "All"
-                    })}
-                  >
-                    Clear Filters
-                  </button>
-                </>
-              ) : activeTab === "my" ? (
-                <>
-                  <p>You haven't reported any issues yet</p>
-                  <button 
-                    className="primary-btn" 
-                    onClick={() => updateState({ showForm: true })}
-                  >
-                    Report Your First Issue
-                  </button>
-                </>
-              ) : (
-                <p>No issues found in this category</p>
-              )}
-            </div>
-          )}
-        </div>
-      </main>
-    );
-  };
-
-  const Footer = () => (
-    <footer className="footer">
-      <div className="footer-content">
-        <div className="footer-section">
-          <p>FixDelhi - Making Delhi better together</p>
-          <p className="footer-stats">
-            Total issues reported: {issues.length} | Resolved: {
-              issues.filter(issue => issue.status === "Resolved").length
-            }
-          </p>
-        </div>
-        
-        <div className="footer-section">
-          <p className="wallet-info-footer">
-            Connected as: {userProfile.displayName}
-          </p>
-          <p className="wallet-address-footer">
-            Wallet: {`${currentAccount.substring(0, 6)}...${currentAccount.substring(currentAccount.length - 4)}`}
-          </p>
-        </div>
-      </div>
-    </footer>
-  );
-
-  if (!currentAccount) {
-    return <WalletConnectScreen />;
-  }
 
   return (
-    <div className={`app ${darkMode ? 'dark-mode' : ''}`}>
-      {notification && (
-        <div className={`notification ${notification.type}`}>
-          {notification.message}
-        </div>
-      )}
-
-      <Header />
-
-      {showStats && <StatsDashboard />}
-      {showMap && <MapView />}
-      {showUserProfile && <UserProfile />}
-
-      <MainContent />
+    <div className={`app-container ${state.darkMode ? 'dark-mode' : ''}`}>
+      <Notification 
+        notification={state.notification} 
+        onClose={closeNotification} 
+      />
       
-      <Footer />
+      {state.currentAccount ? (
+        <>
+          <Header
+            currentAccount={state.currentAccount}
+            darkMode={state.darkMode}
+            showUserProfile={state.showUserProfile}
+            updateState={updateState}
+            disconnectWallet={disconnectWallet}
+            isAdmin={state.isAdmin}
+            toggleViewMode={toggleViewMode}
+          />
+          
+          <UserProfile
+            currentAccount={state.currentAccount}
+            userProfile={state.userProfile}
+            updateState={updateState}
+            showUserProfile={state.showUserProfile}
+          />
+          
+          {state.isAdmin ? (
+            <AdminDashboard
+              state={state}
+              updateAdminState={updateAdminState}
+              handleAdminAction={handleAdminAction}
+              handleActionInputChange={handleActionInputChange}
+              handleActionSubmit={handleActionSubmit}
+              CATEGORY_ICONS={CATEGORY_ICONS}
+              STATUS_OPTIONS={STATUS_OPTIONS}
+              DEPARTMENTS={DEPARTMENTS}
+              toggleViewMode={toggleViewMode}
+            />
+          ) : (
+            <MainContent
+              state={state}
+              updateState={updateState}
+              getFilteredAndSortedIssues={getFilteredAndSortedIssues}
+              upvoteIssue={upvoteIssue}
+              CATEGORY_ICONS={CATEGORY_ICONS}
+              currentAccount={state.currentAccount}
+            />
+          )}
+        </>
+      ) : (
+        <WalletConnectScreen
+          connectWallet={connectWallet}
+          isWalletConnecting={state.isWalletConnecting}
+        />
+      )}
     </div>
   );
-}
+};
 
 export default App;
